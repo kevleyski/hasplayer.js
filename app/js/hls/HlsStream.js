@@ -26,7 +26,8 @@ Hls.dependencies.HlsStream = function() {
         },
     };
 
-    var subtitlesEnabled = false,
+    var manifestUrl = null,
+        subtitlesEnabled = false,
         autoPlay = true,
         initialized = false,
         errored = false,
@@ -138,7 +139,8 @@ Hls.dependencies.HlsStream = function() {
         onError = function(event) {
             var error = event.target.error,
                 code,
-                message = "[Stream] <video> error: ";
+                message = "[Stream] <video> error: ",
+                data = null;
 
             if (error.code === -1) {
                 // not an error!
@@ -159,8 +161,14 @@ Hls.dependencies.HlsStream = function() {
                     message += "[HLS] An error has occurred in the decoding of the media resource";
                     break;
                 case 4:
-                    code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_ERR_SRC_NOT_SUPPORTED;
-                    message += "[HLS] The media could not be loaded, either because the server or network failed or because the format is not supported";
+                    // code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_ERR_SRC_NOT_SUPPORTED;
+                    // message += "[HLS] The media could not be loaded, either because the server or network failed or because the format is not supported";
+                    code = MediaPlayer.dependencies.ErrorHandler.prototype.DOWNLOAD_ERR_MANIFEST;
+                    message = "[HLS] Failed to download manifest";
+                    data = {
+                        url: manifestUrl,
+                        status: 0 // Set 0 as we have no way to get response status code
+                    };
                     break;
                 case 5:
                     code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_ERR_ENCRYPTED;
@@ -170,7 +178,7 @@ Hls.dependencies.HlsStream = function() {
 
             errored = true;
 
-            this.errHandler.sendError(code, message);
+            this.errHandler.sendError(code, message, data);
         },
 
         onSeeking = function() {
@@ -236,7 +244,7 @@ Hls.dependencies.HlsStream = function() {
         getCertificate = function () {
             var protData = getKsProtectionData('com.apple.fps.1_0');
             if (!protData || !protData.serverCertificate) {
-                return [];
+                return new Uint8Array(0);
             }
             return BASE64.decodeArray(protData.serverCertificate);
         },
@@ -311,7 +319,7 @@ Hls.dependencies.HlsStream = function() {
 
                 // Raise error only if request has not been aborted by reset
                 if (!this.aborted) {
-                    self.errHandler.sendError(MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYMESSERR_LICENSER_ERROR,"License request failed", {url: url, status: this.status, error: this.response});
+                    self.errHandler.sendError(MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYMESSERR_LICENSER_ERROR, "License request failed", {url: url, status: this.status, error: this.response});
                 }
                 licenseRequest = null;
             };
@@ -338,11 +346,12 @@ Hls.dependencies.HlsStream = function() {
         },
 
         getKeyError = function(event) {
-            var code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYERR,
+            var error = event.target.error,
+                code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYERR,
                 msg = "MediakeyError";
 
-            if (event.errorCode) {
-                switch (event.errorCode.code) {
+            if (error) {
+                switch (error.code) {
                     case 1:
                         code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYERR_UNKNOWN;
                         msg = "An unspecified error occurred. This value is used for errors that don't match any of the other codes.";
@@ -376,7 +385,7 @@ Hls.dependencies.HlsStream = function() {
                 code = MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYERR_UNKNOWN;
                 msg = "An unspecified error occurred. This value is used for errors that don't match any of the other codes.";
             }
-            if (event.systemCode) {
+            if (error.systemCode) {
                 msg += "  (System Code = " + event.systemCode + ")";
             }
             return new MediaPlayer.vo.protection.KeyError(code, msg);
@@ -416,10 +425,19 @@ Hls.dependencies.HlsStream = function() {
 
             var session = e.target,
                 message = e.message,
-                type;
+                url = null,
+                type,
+                protData = getKsProtectionData('com.apple.fps.1_0');
 
-            var protData = getKsProtectionData('com.apple.fps.1_0');
-            if (!protData || !protData.laURL) {
+            if (protData) {
+                if (protData.serverURL && typeof protData.serverURL === "string" && protData.serverURL !== "") {
+                    url = protData.serverURL;
+                } else if (protData.laURL && protData.laURL !== "") { // TODO: Deprecated!
+                    url = protData.laURL;
+                }
+            }
+
+            if (url === null) {
                 this.errHandler.sendError(MediaPlayer.dependencies.ErrorHandler.prototype.MEDIA_KEYMESSERR_URL_LICENSER_UNKNOWN, "No license server URL specified");
                 return;
             }
@@ -427,7 +445,7 @@ Hls.dependencies.HlsStream = function() {
             type = (protData && protData.requestType && protData.requestType === 'text') ? 'text' : 'stream';
 
             message = processLicenseMessage(session, type, message);
-            sendLicenseRequest.call(this, session, type, protData.laURL, message);
+            sendLicenseRequest.call(this, session, type, url, message);
         },
 
         onKeyAdded = function(e) {
@@ -478,6 +496,10 @@ Hls.dependencies.HlsStream = function() {
         },
 
         load: function(url) {
+            manifestUrl = url;
+            if (initialStartTime >= 0) {
+                url += '#t=' + initialStartTime;
+            }
             this.videoModel.setSource(url);
         },
 

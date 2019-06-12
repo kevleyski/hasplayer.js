@@ -1,9 +1,41 @@
+### Release Notes v1.15.1 (2019/02/13)
+* [HLS] Map MEDIA_ERR_SRC_NOT_SUPPORTED error to DOWNLOAD_ERR_MANIFEST error (native HLS+FP on Safari/OSx use case)
+
+### Release Notes v1.15.0 (2018/07/20)
+* [MSS] Add support for live streams with infinite DVR window size [#233]
+* Bugs fixing:
+* - [MSS] Fix static manifest parsing if attribute 'd' is not defined for 1st segment [#235]
+
+### Release Notes v1.14.2 (2018/04/09)
+* Bugs fixing:
+* - Fix reset process for protected streams (patch for MediaKeySession.close()) [#225]
+* - Fix bug when configuring robustness rules for key system access [#224]
+* - [MSS] Correct support for specific timescales (at <SmoothStreamingMedia> and <StreamIndex> levels) [#229, #230]
+* - [MSS] Correct 'subs' box writing [#231]
+* - [HLS] Correct start time support in case of HLS native playback on Safari [#223]
+
+### Release Notes v1.14.1 (2018/02/15)
+* Bugs fixing:
+* - [HLS] Correct key error ('webkitkeyerror') handler (native HLS+FP on Safari/OSx use case)
+* - [HLS] Correct licenser url getting from protection data (native HLS+FP on Safari/OSx use case)
+
+### Release Notes v1.14.0 (2018/02/08)
+* [MSS] Add automatic Widevine pssh generation [#216]
+* [MSS] Detect PlayReady messages encoding [#207]
+* Avoid seeking to stream duration [#219]
+* Bugs fixing:
+* - Do not remove past buffers for generic WebKit [#205]
+* - Fix ArrayBuffer.isView method implementation [#206]
+* - Fix initData type passing to CDM for ProtectionModel_01b [#208]
+* - Perform null check on playBackQuality [#211]
+* - [MSS] Fix for live stream with only one entry in tfrf box [#215]
+
 ### Release Notes v1.13.1 (2017/12/01)
 * Bugs fixing:
 * - Fix regression on segment download error management
 
 ### Release Notes v1.13.0 (2017/11/09)
-* [MSS] Enhanced support for live start-over streams, processed as 'static' streams) [#196]
+* [MSS] Enhanced support for live start-over streams, processed as 'static' streams [#196]
 * [MSS] Add support for chunk 'r' (repeat) attribute [#198]
 * Bugs fixing:
 * - Bug fix on metrics persistence [#192]

@@ -22,7 +22,7 @@ if (!Number.MAX_SAFE_INTEGER) {
 Mss.dependencies.MssParser = function() {
     "use strict";
 
-    var TIME_SCALE_100_NANOSECOND_UNIT = 10000000.0,
+    var DEFAULT_TIME_SCALE = 10000000.0,
         SUPPORTED_CODECS = ["AAC", "AACL", "AVC1", "H264", "TTML", "DFXP"],
         samplingFrequencyIndex = {
             96000: 0x0,
@@ -47,7 +47,7 @@ Mss.dependencies.MssParser = function() {
         xmlDoc = null,
         baseURL = null,
 
-        mapPeriod = function() {
+        mapPeriod = function(timescale) {
             var period = {},
                 adaptations = [],
                 adaptation,
@@ -59,7 +59,7 @@ Mss.dependencies.MssParser = function() {
             // For each StreamIndex node, create an AdaptationSet element
             for (i = 0; i < smoothNode.childNodes.length; i++) {
                 if (smoothNode.childNodes[i].nodeName === "StreamIndex") {
-                    adaptation = mapAdaptationSet.call(this, smoothNode.childNodes[i]);
+                    adaptation = mapAdaptationSet.call(this, smoothNode.childNodes[i], timescale);
                     if (adaptation !== null) {
                         adaptations.push(adaptation);
                     }
@@ -74,7 +74,7 @@ Mss.dependencies.MssParser = function() {
             return period;
         },
 
-        mapAdaptationSet = function(streamIndex) {
+        mapAdaptationSet = function(streamIndex, timescale) {
 
             var adaptationSet = {},
                 representations = [],
@@ -98,7 +98,7 @@ Mss.dependencies.MssParser = function() {
             }
 
             // Create a SegmentTemplate with a SegmentTimeline
-            segmentTemplate = mapSegmentTemplate.call(this, streamIndex);
+            segmentTemplate = mapSegmentTemplate.call(this, streamIndex, timescale);
 
             qualityLevels = this.domParser.getChildNodes(streamIndex, "QualityLevel");
             // For each QualityLevel node, create a Representation element
@@ -265,23 +265,27 @@ Mss.dependencies.MssParser = function() {
             return "mp4a.40." + objectType;
         },
 
-        mapSegmentTemplate = function(streamIndex) {
+        mapSegmentTemplate = function(streamIndex, timescale) {
 
             var segmentTemplate = {},
-                mediaUrl;
+                mediaUrl,
+                streamIndexTimeScale;
 
             mediaUrl = this.domParser.getAttributeValue(streamIndex, "Url").replace('{bitrate}', '$Bandwidth$');
             mediaUrl = mediaUrl.replace('{start time}', '$Time$');
 
-            segmentTemplate.media = mediaUrl;
-            segmentTemplate.timescale = TIME_SCALE_100_NANOSECOND_UNIT;
+            streamIndexTimeScale = this.domParser.getAttributeValue(streamIndex, "TimeScale");
+            streamIndexTimeScale = streamIndexTimeScale ? parseFloat(streamIndexTimeScale) : timescale;
 
-            segmentTemplate.SegmentTimeline = mapSegmentTimeline.call(this, streamIndex);
+            segmentTemplate.media = mediaUrl;
+            segmentTemplate.timescale = streamIndexTimeScale;
+
+            segmentTemplate.SegmentTimeline = mapSegmentTimeline.call(this, streamIndex, segmentTemplate.timescale);
 
             return segmentTemplate;
         },
 
-        mapSegmentTimeline = function(streamIndex) {
+        mapSegmentTimeline = function(streamIndex, timescale) {
 
             var segmentTimeline = {},
                 chunks = this.domParser.getChildNodes(streamIndex, "c"),
@@ -324,6 +328,7 @@ Mss.dependencies.MssParser = function() {
                        } else {
                            prevSegment.d = segment.t - prevSegment.t;
                        }
+                       duration += prevSegment.d;
                     }
                     // Set segment absolute timestamp if not set in manifest
                     if (!segment.t) {
@@ -336,7 +341,9 @@ Mss.dependencies.MssParser = function() {
                     }
                 }
 
-                duration += segment.d;
+                if (segment.d) {
+                    duration += segment.d;
+                }
 
                 // Create new segment
                 segments.push(segment);
@@ -361,7 +368,7 @@ Mss.dependencies.MssParser = function() {
 
             segmentTimeline.S = segments;
             segmentTimeline.S_asArray = segments;
-            segmentTimeline.duration = duration / TIME_SCALE_100_NANOSECOND_UNIT;
+            segmentTimeline.duration = duration / timescale;
 
             return segmentTimeline;
         },
@@ -471,7 +478,7 @@ Mss.dependencies.MssParser = function() {
             return contentProtection;
         },
 
-        createWidevineContentProtection = function(/*protectionHeader*/) {
+        createWidevineContentProtection = function(KID) {
 
             var contentProtection = {},
                 keySystem = this.system.getObject("ksWidevine");
@@ -479,9 +486,51 @@ Mss.dependencies.MssParser = function() {
             contentProtection.schemeIdUri = keySystem.schemeIdURI;
             contentProtection.value = keySystem.systemString;
 
+            // Create Widevine CENC header (Protocol Buffer) with KID value
+            var wvCencHeader = new Uint8Array(2 + KID.length);
+            wvCencHeader[0] = 0x12;
+            wvCencHeader[1] = 0x10;
+            wvCencHeader.set(KID, 2);
+    
+            // Create a pssh box
+            var length = 12 /* box length, type, version and flags */ + 16 /* SystemID */ + 4 /* data length */ + wvCencHeader.length,
+                pssh = new Uint8Array(length),
+                i = 0;
+    
+            // Set box length value
+            pssh[i++] = (length & 0xFF000000) >> 24;
+            pssh[i++] = (length & 0x00FF0000) >> 16;
+            pssh[i++] = (length & 0x0000FF00) >> 8;
+            pssh[i++] = (length & 0x000000FF);
+    
+            // Set type ('pssh'), version (0) and flags (0)
+            pssh.set([0x70, 0x73, 0x73, 0x68, 0x00, 0x00, 0x00, 0x00], i);
+            i += 8;
+    
+            // Set SystemID ('edef8ba9-79d6-4ace-a3c8-27dcd51d21ed')
+            pssh.set([0xed, 0xef, 0x8b, 0xa9,  0x79, 0xd6, 0x4a, 0xce, 0xa3, 0xc8, 0x27, 0xdc, 0xd5, 0x1d, 0x21, 0xed], i);
+            i += 16;
+    
+            // Set data length value
+            pssh[i++] = (wvCencHeader.length & 0xFF000000) >> 24;
+            pssh[i++] = (wvCencHeader.length & 0x00FF0000) >> 16;
+            pssh[i++] = (wvCencHeader.length & 0x0000FF00) >> 8;
+            pssh[i++] = (wvCencHeader.length & 0x000000FF);
+    
+            // Copy Widevine CENC header
+            pssh.set(wvCencHeader, i);
+    
+            // Convert to BASE64 string
+            pssh = String.fromCharCode.apply(null, pssh);
+            pssh = BASE64.encodeASCII(pssh);         
+            
+            // Add pssh value to ContentProtection
+            contentProtection.pssh = {
+                __text: pssh
+            };
+
             return contentProtection;
         },
-        /* @endif */
 
         addDVRInfo = function(adaptationSet) {
             var segmentTemplate = adaptationSet.SegmentTemplate,
@@ -517,9 +566,16 @@ Mss.dependencies.MssParser = function() {
             // Set mpd node properties
             mpd.name = 'MSS';
             mpd.profiles = "urn:mpeg:dash:profile:isoff-live:2011";
+            var timescale = this.domParser.getAttributeValue(smoothNode, 'TimeScale');
+            mpd.timescale = timescale ? parseFloat(timescale) : DEFAULT_TIME_SCALE;
             var isLive = this.domParser.getAttributeValue(smoothNode, 'IsLive');
             mpd.type = (isLive !== null && isLive.toLowerCase() === 'true') ? 'dynamic' : 'static';
-            mpd.timeShiftBufferDepth = parseFloat(this.domParser.getAttributeValue(smoothNode, 'DVRWindowLength')) / TIME_SCALE_100_NANOSECOND_UNIT;
+            // var canSeek = this.domParser.getAttributeValue(smoothNode, 'CanSeek');
+            var dvrWindowLength = parseFloat(this.domParser.getAttributeValue(smoothNode, 'DVRWindowLength'));
+            if (isLive && (dvrWindowLength === 0 || isNaN(dvrWindowLength))) {
+                dvrWindowLength = Infinity;
+            }
+            mpd.timeShiftBufferDepth = dvrWindowLength / mpd.timescale;
             var duration = parseFloat(this.domParser.getAttributeValue(smoothNode, 'Duration'));
 
             // If live manifest with Duration, we consider it as a start-over manifest
@@ -527,22 +583,22 @@ Mss.dependencies.MssParser = function() {
                 mpd.type = "static";
                 mpd.startOver = true;
                 // We set timeShiftBufferDepth to initial duration, to be used by MssFragmentController to update segment timeline
-                mpd.timeShiftBufferDepth = duration / TIME_SCALE_100_NANOSECOND_UNIT;
+                mpd.timeShiftBufferDepth = duration / mpd.timescale;
                 // Duration will be set according to current segment timeline duration (see below)
             }
 
             // Complete manifest/mpd initialization
-            mpd.mediaPresentationDuration = (duration === 0) ? Infinity : (duration / TIME_SCALE_100_NANOSECOND_UNIT);
+            mpd.mediaPresentationDuration = (duration === 0) ? Infinity : (duration / mpd.timescale);
             mpd.BaseURL = baseURL;
             mpd.minBufferTime = MediaPlayer.dependencies.BufferExtensions.DEFAULT_MIN_BUFFER_TIME;
 
             // In case of live streams, set availabilityStartTime property according to DVRWindowLength
-            if (mpd.type === "dynamic") {
+            if (mpd.type === "dynamic" && mpd.timeShiftBufferDepth < Infinity ) {
                 mpd.availabilityStartTime = new Date(manifestLoadedTime.getTime() - (mpd.timeShiftBufferDepth * 1000));
             }
 
             // Map period node to manifest root node
-            mpd.Period = mapPeriod.call(this);
+            mpd.Period = mapPeriod.call(this, mpd.timescale);
             mpd.Period_asArray = [mpd.Period];
 
             period = mpd.Period;
@@ -574,7 +630,7 @@ Mss.dependencies.MssParser = function() {
                     contentProtections.push(contentProtection);
 
                     // Create ContentProtection for Widevine (as a CENC protection)
-                    contentProtection = createWidevineContentProtection.call(this, protectionHeader);
+                    contentProtection = createWidevineContentProtection.call(this, KID);
                     contentProtection["cenc:default_KID"] = KID;
                     contentProtections.push(contentProtection);
 
@@ -599,8 +655,13 @@ Mss.dependencies.MssParser = function() {
                 }
 
                 if (mpd.type === "dynamic") {
+                    // set availabilityStartTime for infinite DVR Window from segment timeline duration
+                    if (mpd.timeShiftBufferDepth === Infinity) {
+                        mpd.availabilityStartTime = new Date(manifestLoadedTime.getTime() - (adaptations[1].SegmentTemplate.SegmentTimeline.duration * 1000));
+                    }
                     // Match timeShiftBufferDepth to video segment timeline duration
                     if (mpd.timeShiftBufferDepth > 0 &&
+                        mpd.timeShiftBufferDepth !== Infinity &&
                         adaptations[i].contentType === 'video' &&
                         mpd.timeShiftBufferDepth > adaptations[i].SegmentTemplate.SegmentTimeline.duration) {
                         mpd.timeShiftBufferDepth = adaptations[i].SegmentTemplate.SegmentTimeline.duration;
@@ -632,8 +693,8 @@ Mss.dependencies.MssParser = function() {
                     for (i = 0; i < adaptations.length; i++) {
                         if (adaptations[i].contentType === 'audio' || adaptations[i].contentType === 'video') {
                             segments = adaptations[i].SegmentTemplate.SegmentTimeline.S_asArray;
-                            startTime = segments[0].t;
-                            if (!timestampOffset) {
+                            startTime = segments[0].t / adaptations[i].SegmentTemplate.timescale;
+                            if (timestampOffset === undefined) {
                                 timestampOffset = startTime;
                             }
                             timestampOffset = Math.min(timestampOffset, startTime);
@@ -653,13 +714,13 @@ Mss.dependencies.MssParser = function() {
                             if (!segments[j].tManifest) {
                                 segments[j].tManifest = segments[j].t;
                             }
-                            segments[j].t -= timestampOffset;
+                            segments[j].t -= (timestampOffset * adaptations[i].SegmentTemplate.timescale);
                         }
                         if (adaptations[i].contentType === 'audio' || adaptations[i].contentType === 'video') {
                             period.start = Math.max(segments[0].t, period.start);
                         }
                     }
-                    period.start /= TIME_SCALE_100_NANOSECOND_UNIT;
+                    period.start /= mpd.timescale;
                 }
             }
 
